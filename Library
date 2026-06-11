@@ -1,0 +1,286 @@
+-- UILibrary.lua
+local UILibrary = {}
+
+-- Сервисы
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+-- Настройки по умолчанию
+local defaultTheme = {
+    Background = Color3.fromRGB(30, 30, 36),
+    Topbar = Color3.fromRGB(45, 45, 54),
+    Text = Color3.fromRGB(255, 255, 255),
+    Accent = Color3.fromRGB(0, 120, 255),
+    ElementBg = Color3.fromRGB(40, 40, 48),
+    ElementHover = Color3.fromRGB(50, 50, 60),
+    Stroke = Color3.fromRGB(60, 60, 70),
+}
+
+-- Хранилище созданных окон
+local windows = {}
+
+-- === Вспомогательные функции ===
+local function makeDraggable(frame, dragHandle)
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+
+    dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            local newPos = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            frame.Position = newPos
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+end
+
+-- === Функция создания окна ===
+function UILibrary:CreateWindow(title, themeOverrides)
+    local theme = {}
+    for k, v in pairs(defaultTheme) do theme[k] = v end
+    if themeOverrides then
+        for k, v in pairs(themeOverrides) do theme[k] = v end
+    end
+
+    -- Создаём ScreenGui
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "UILibrary_Gui"
+    gui.ResetOnSpawn = false
+    gui.Parent = game:GetService("CoreGui") -- или gethui() если есть
+
+    -- Главное окно
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 600, 0, 400)
+    mainFrame.Position = UDim2.new(0.5, -300, 0.5, -200)
+    mainFrame.BackgroundColor3 = theme.Background
+    mainFrame.BorderSizePixel = 0
+    mainFrame.AnchorPoint = Vector2.new(0, 0)
+    mainFrame.Parent = gui
+
+    -- Тень/обводка (опционально)
+    local uiStroke = Instance.new("UIStroke")
+    uiStroke.Color = theme.Stroke
+    uiStroke.Thickness = 1
+    uiStroke.Parent = mainFrame
+
+    -- Верхняя панель (заголовок + кнопки)
+    local topbar = Instance.new("Frame")
+    topbar.Size = UDim2.new(1, 0, 0, 35)
+    topbar.BackgroundColor3 = theme.Topbar
+    topbar.BorderSizePixel = 0
+    topbar.Parent = mainFrame
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -80, 1, 0)
+    titleLabel.Position = UDim2.new(0, 10, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = title
+    titleLabel.TextColor3 = theme.Text
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextSize = 14
+    titleLabel.Parent = topbar
+
+    -- Кнопка закрытия
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 30, 1, 0)
+    closeBtn.Position = UDim2.new(1, -30, 0, 0)
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = theme.Text
+    closeBtn.BackgroundTransparency = 1
+    closeBtn.Parent = topbar
+    closeBtn.MouseButton1Click:Connect(function()
+        gui:Destroy()
+    end)
+
+    -- Делаем окно перетаскиваемым
+    makeDraggable(mainFrame, topbar)
+
+    -- Боковая панель вкладок
+    local tabList = Instance.new("ScrollingFrame")
+    tabList.Size = UDim2.new(0, 150, 1, -35)
+    tabList.Position = UDim2.new(0, 0, 0, 35)
+    tabList.BackgroundColor3 = theme.ElementBg
+    tabList.BorderSizePixel = 0
+    tabList.ScrollBarThickness = 4
+    tabList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    tabList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    tabList.Parent = mainFrame
+
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.Padding = UDim.new(0, 5)
+    listLayout.Parent = tabList
+
+    -- Область содержимого
+    local contentFrame = Instance.new("ScrollingFrame")
+    contentFrame.Size = UDim2.new(1, -160, 1, -35)
+    contentFrame.Position = UDim2.new(0, 160, 0, 35)
+    contentFrame.BackgroundColor3 = theme.Background
+    contentFrame.BorderSizePixel = 0
+    contentFrame.ScrollBarThickness = 6
+    contentFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    contentFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    contentFrame.Parent = mainFrame
+
+    local contentLayout = Instance.new("UIListLayout")
+    contentLayout.Padding = UDim.new(0, 8)
+    contentLayout.Parent = contentFrame
+
+    -- Объект окна для API
+    local window = {
+        gui = gui,
+        mainFrame = mainFrame,
+        contentFrame = contentFrame,
+        tabList = tabList,
+        tabs = {},
+        currentTab = nil,
+        theme = theme,
+    }
+
+    -- Функция для переключения вкладок
+    function window:SelectTab(tabName)
+        if self.currentTab then
+            self.currentTab.button.BackgroundColor3 = self.theme.ElementBg
+            self.currentTab.button.TextColor3 = self.theme.Text
+            self.currentTab.content.Visible = false
+        end
+        local tab = self.tabs[tabName]
+        if tab then
+            tab.button.BackgroundColor3 = self.theme.Accent
+            tab.button.TextColor3 = self.theme.Text
+            tab.content.Visible = true
+            self.currentTab = tab
+        end
+    end
+
+    -- Функция для создания вкладки
+    function window:CreateTab(name)
+        local tabButton = Instance.new("TextButton")
+        tabButton.Size = UDim2.new(1, -10, 0, 35)
+        tabButton.Text = name
+        tabButton.BackgroundColor3 = self.theme.ElementBg
+        tabButton.TextColor3 = self.theme.Text
+        tabButton.BorderSizePixel = 0
+        tabButton.Parent = self.tabList
+
+        local tabContent = Instance.new("ScrollingFrame")
+        tabContent.Size = UDim2.new(1, 0, 1, 0)
+        tabContent.BackgroundTransparency = 1
+        tabContent.BorderSizePixel = 0
+        tabContent.ScrollBarThickness = 6
+        tabContent.CanvasSize = UDim2.new(0, 0, 0, 0)
+        tabContent.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        tabContent.Visible = false
+        tabContent.Parent = self.contentFrame
+
+        local tabLayout = Instance.new("UIListLayout")
+        tabLayout.Padding = UDim.new(0, 8)
+        tabLayout.Parent = tabContent
+
+        tabButton.MouseButton1Click:Connect(function()
+            self:SelectTab(name)
+        end)
+
+        self.tabs[name] = {
+            button = tabButton,
+            content = tabContent,
+            layout = tabLayout,
+        }
+
+        if not self.currentTab then
+            self:SelectTab(name)
+        end
+
+        -- Возвращаем объект для добавления элементов
+        return {
+            _window = self,
+            _content = tabContent,
+            _layout = tabLayout,
+        }
+    end
+
+    -- Добавляем базовые методы для создания элементов прямо в окно (опционально)
+    windows[#windows+1] = window
+    return window
+end
+
+-- === Методы для создания элементов (работают с объектом вкладки) ===
+
+function UILibrary:CreateButton(parentTab, config)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(1, -20, 0, 35)
+    button.Text = config.Text or "Button"
+    button.BackgroundColor3 = parentTab._window.theme.ElementBg
+    button.TextColor3 = parentTab._window.theme.Text
+    button.BorderSizePixel = 0
+    button.Parent = parentTab._content
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = parentTab._window.theme.Stroke
+    stroke.Thickness = 1
+    stroke.Parent = button
+
+    button.MouseButton1Click:Connect(config.Callback or function() end)
+    return button
+end
+
+function UILibrary:CreateLabel(parentTab, text, color)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -20, 0, 25)
+    label.Text = text
+    label.TextColor3 = color or parentTab._window.theme.Text
+    label.BackgroundTransparency = 1
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = parentTab._content
+    return label
+end
+
+function UILibrary:CreateTextBox(parentTab, config)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -20, 0, 35)
+    frame.BackgroundColor3 = parentTab._window.theme.ElementBg
+    frame.BorderSizePixel = 0
+    frame.Parent = parentTab._content
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = parentTab._window.theme.Stroke
+    stroke.Parent = frame
+
+    local textBox = Instance.new("TextBox")
+    textBox.Size = UDim2.new(1, -10, 1, -10)
+    textBox.Position = UDim2.new(0, 5, 0, 5)
+    textBox.Text = config.Default or ""
+    textBox.PlaceholderText = config.Placeholder or ""
+    textBox.TextColor3 = parentTab._window.theme.Text
+    textBox.BackgroundTransparency = 1
+    textBox.ClearTextOnFocus = false
+    textBox.Parent = frame
+
+    textBox.FocusLost:Connect(function(enterPressed)
+        if config.Callback then
+            config.Callback(textBox.Text)
+        end
+    end)
+    return textBox
+end
+
+-- Аналогично можно добавить Toggle, Slider, Dropdown и т.д.
+-- Принцип тот же: создаём Frame с нужной логикой и анимациями.
+
+return UILibrary
