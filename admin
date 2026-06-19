@@ -1,0 +1,834 @@
+print("injected")
+--[[
+    Modern Admin – две колонки: слева Server, Riches, Opiumware, Discord; справа Friends
+    Чёрные окна (transparency 0)
+    Кнопка настроек слева от поля ввода открывает меню (размер 320x200) с выбором горячей клавиши
+    Команды: ;reset, ;goto, ;speed, ;bring, ;infjump, ;help
+    При нажатии ; или / автофокус и вставка префикса
+--]]
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local function copyToClipboard(text)
+    local success = false
+    if setclipboard then success = pcall(setclipboard, text) end
+    if not success and toClipboard then success = pcall(toClipboard, text) end
+    if not success and Clipboard and Clipboard.set then success = pcall(Clipboard.set, text) end
+    if not success then warn("Копирование не поддерживается") end
+    return success
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ModernAdmin"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Функция создания окна
+local function createWindow(title, width, height, xPos, yPos)
+    local window = Instance.new("Frame")
+    window.Size = UDim2.new(0, width, 0, height)
+    window.Position = UDim2.new(0, xPos, 0, yPos)
+    window.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    window.BackgroundTransparency = 0
+    window.BorderSizePixel = 0
+    window.ClipsDescendants = true
+    window.Parent = screenGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = window
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(60, 60, 70)
+    stroke.Thickness = 1
+    stroke.Transparency = 0
+    stroke.Parent = window
+
+    local titleBar = Instance.new("Frame")
+    titleBar.Size = UDim2.new(1, 0, 0, 34)
+    titleBar.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+    titleBar.BackgroundTransparency = 1
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = window
+
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 12)
+    titleCorner.Parent = titleBar
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -20, 1, 0)
+    titleLabel.Position = UDim2.new(0, 15, 0, 0)
+    titleLabel.Text = "       " .. title
+    titleLabel.TextColor3 = Color3.fromRGB(220, 230, 255)
+    titleLabel.TextSize = 25
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Parent = titleBar
+
+    local content = Instance.new("Frame")
+    content.Size = UDim2.new(1, 0, 1, -34)
+    content.Position = UDim2.new(0, 0, 0, 34)
+    content.BackgroundTransparency = 1
+    content.Parent = window
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 8)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = content
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, 14)
+    padding.PaddingRight = UDim.new(0, 14)
+    padding.PaddingTop = UDim.new(0, 10)
+    padding.PaddingBottom = UDim.new(0, 10)
+    padding.Parent = content
+
+    return content
+end
+
+local function addBulletRow(parent, label, valueFunc, updateInterval)
+    local row = Instance.new("Frame")
+    row.BackgroundTransparency = 1
+    row.Size = UDim2.new(1, 0, 0, 24)
+    row.AutomaticSize = Enum.AutomaticSize.Y
+    row.Parent = parent
+
+    local bullet = Instance.new("TextLabel")
+    bullet.Text = "-"
+    bullet.TextColor3 = Color3.fromRGB(200, 210, 230)
+    bullet.TextSize = 14
+    bullet.Font = Enum.Font.SourceSans
+    bullet.TextXAlignment = Enum.TextXAlignment.Left
+    bullet.BackgroundTransparency = 1
+    bullet.Size = UDim2.new(0, 20, 1, 0)
+    bullet.Parent = row
+
+    local labelTxt = Instance.new("TextLabel")
+    labelTxt.Text = label .. "  "
+    labelTxt.TextColor3 = Color3.fromRGB(230, 235, 245)
+    labelTxt.TextSize = 14
+    labelTxt.Font = Enum.Font.SourceSans
+    labelTxt.TextXAlignment = Enum.TextXAlignment.Left
+    labelTxt.BackgroundTransparency = 1
+    labelTxt.Size = UDim2.new(0, 140, 1, 0)
+    labelTxt.Position = UDim2.new(0, 20, 0, 0)
+    labelTxt.Parent = row
+
+    local valueTxt = Instance.new("TextLabel")
+    local ok, val = pcall(valueFunc)
+    valueTxt.Text = ok and tostring(val) or "?"
+    valueTxt.TextColor3 = Color3.fromRGB(170, 180, 200)
+    valueTxt.TextSize = 14
+    valueTxt.Font = Enum.Font.SourceSans
+    valueTxt.TextXAlignment = Enum.TextXAlignment.Left
+    valueTxt.BackgroundTransparency = 1
+    valueTxt.Size = UDim2.new(1, -160, 1, 0)
+    valueTxt.Position = UDim2.new(0, 160, 0, 0)
+    valueTxt.Parent = row
+
+    if updateInterval then
+        task.spawn(function()
+            while screenGui.Parent do
+                task.wait(updateInterval)
+                local ok2, val2 = pcall(valueFunc)
+                valueTxt.Text = ok2 and tostring(val2) or "?"
+            end
+        end)
+    end
+    return valueTxt
+end
+
+local function addButtonRow(parent, text, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 34)
+    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    btn.BackgroundTransparency = 0
+    btn.TextColor3 = Color3.fromRGB(220, 230, 255)
+    btn.Text = text
+    btn.TextSize = 13
+    btn.Font = Enum.Font.Gotham
+    btn.AutoButtonColor = false
+    btn.Parent = parent
+
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 8)
+    btnCorner.Parent = btn
+
+    btn.MouseButton1Click:Connect(callback)
+    btn.MouseEnter:Connect(function()
+        btn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+    end)
+    btn.MouseLeave:Connect(function()
+        btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    end)
+end
+
+-- Параметры расположения
+local leftX = 15
+local rightX = 550
+local startY = 40
+local gap = 12
+local serverHeight = 300
+local friendsHeight = 160
+local richesHeight = 100
+local opiumHeight = 100
+local discordHeight = 100
+
+-- ЛЕВАЯ КОЛОНКА
+local serverContent = createWindow("Server", 500, serverHeight, leftX, startY)
+addBulletRow(serverContent, "Players", function() return #Players:GetPlayers() .. " playing" end, 1)
+addBulletRow(serverContent, "Maximum Players", function() return Players.MaxPlayers .. " players can join this server" end)
+addBulletRow(serverContent, "Latency", function()
+    local ping = game:GetService("Stats").Network:GetAveragePing()
+    return math.floor(ping) .. "ms"
+end, 1)
+addBulletRow(serverContent, "Server Region", function() return "Unable to retrieve region" end)
+addBulletRow(serverContent, "In server for", function()
+    local elapsed = tick() - (game:GetService("Workspace").DistributedGameTime or 0)
+    local hours = math.floor(elapsed / 3600)
+    local mins = math.floor((elapsed % 3600) / 60)
+    local secs = math.floor(elapsed % 60)
+    return string.format("%02d:%02d:%02d", hours, mins, secs)
+end, 1)
+addButtonRow(serverContent, "Tap to copy join script", function()
+    copyToClipboard('loadstring(game:HttpGet("https://pastebin.com/raw/YourScript"))()')
+    local btn = serverContent:FindFirstChildOfClass("TextButton")
+    if btn then
+        local old = btn.Text
+        btn.Text = "✓ Copied!"
+        task.wait(1.5)
+        btn.Text = old
+    end
+end)
+
+-- Riches (Player)
+local richesContent = createWindow(LocalPlayer.DisplayName, 360, richesHeight, leftX, startY + serverHeight + gap)
+local displayLabel = Instance.new("TextLabel")
+displayLabel.Text = "          @" .. LocalPlayer.Name
+displayLabel.TextColor3 = Color3.fromRGB(255, 210, 120)
+displayLabel.TextSize = 15
+displayLabel.Font = Enum.Font.GothamBold
+displayLabel.TextXAlignment = Enum.TextXAlignment.Left
+displayLabel.BackgroundTransparency = 1
+displayLabel.Size = UDim2.new(1, 0, 0, 28)
+displayLabel.Parent = richesContent
+LocalPlayer:GetPropertyChangedSignal("DisplayName"):Connect(function()
+    displayLabel.Text = LocalPlayer.DisplayName
+end)
+
+-- Opiumware (Executor)
+local ExecName, ExecVersion = identifyexecutor()
+print(ExecName)
+local ExecSupported = (ExecName == "Potassium" or ExecName == "Wave" or ExecName == "Seliware" or ExecName == "Cosmic" or ExecName == "Madium")
+print(ExecSupported)
+local opiumContent = createWindow(ExecName, 315, opiumHeight, leftX, startY + serverHeight + gap + richesHeight + gap)
+local opiumText = Instance.new("TextLabel")
+if ExecSupported then
+    opiumText.Text = "This executor is verified as supported"
+else
+    opiumText.Text = "  This executor is not verified as supported - but may still work"
+end
+opiumText.TextColor3 = Color3.fromRGB(180, 185, 210)
+opiumText.TextSize = 16
+opiumText.Font = Enum.Font.SourceSans
+opiumText.TextWrapped = true
+opiumText.BackgroundTransparency = 1
+opiumText.Size = UDim2.new(1, 0, 1, 0)
+opiumText.Parent = opiumContent
+
+-- Discord
+local discordContent = createWindow("Discord", 250, discordHeight, leftX, startY + serverHeight + gap + richesHeight + gap + opiumHeight + gap)
+local discordBtn = Instance.new("TextButton")
+discordBtn.Size = UDim2.new(1, 0, 1, -8)
+discordBtn.Position = UDim2.new(0, 0, 0, 4)
+discordBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+discordBtn.BackgroundTransparency = 0
+discordBtn.Text = "Tap to join our Discord server for updates and news"
+discordBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+discordBtn.TextSize = 12
+discordBtn.Font = Enum.Font.Gotham
+discordBtn.AutoButtonColor = false
+discordBtn.Parent = discordContent
+local dCorner = Instance.new("UICorner")
+dCorner.CornerRadius = UDim.new(0, 8)
+dCorner.Parent = discordBtn
+discordBtn.MouseButton1Click:Connect(function()
+    copyToClipboard("https://discord.gg/invite")
+    local old = discordBtn.Text
+    discordBtn.Text = "✓ Invite copied!"
+    task.wait(1.5)
+    discordBtn.Text = old
+end)
+discordBtn.MouseEnter:Connect(function()
+    discordBtn.BackgroundColor3 = Color3.fromRGB(108, 121, 262)
+end)
+discordBtn.MouseLeave:Connect(function()
+    discordBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+end)
+
+-- ПРАВАЯ КОЛОНКА (Friends)
+local friendsContent = createWindow("Friends", 275, friendsHeight, rightX, startY)
+addBulletRow(friendsContent, "In Server", function() return "0 friends" end)
+addBulletRow(friendsContent, "Offline", function() return "450 friends" end)
+addBulletRow(friendsContent, "Online", function() return "0 friends" end)
+addBulletRow(friendsContent, "All", function() return "450 friends" end)
+
+-- ========================== НИЖНЯЯ ПАНЕЛЬ ==========================
+-- Создаём suggestionFrame (подсказки)
+local suggestionFrame = Instance.new("ScrollingFrame")
+suggestionFrame.Name = "SuggestionFrame"
+suggestionFrame.Size = UDim2.new(0, 320, 0, 150)
+suggestionFrame.Position = UDim2.new(0.5, -160, 1, -220)
+suggestionFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+suggestionFrame.BackgroundTransparency = 0
+suggestionFrame.BorderSizePixel = 0
+suggestionFrame.Visible = false
+suggestionFrame.ScrollBarThickness = 4
+suggestionFrame.Parent = screenGui
+
+local suggestionCorner = Instance.new("UICorner")
+suggestionCorner.CornerRadius = UDim.new(0, 12)
+suggestionCorner.Parent = suggestionFrame
+
+local suggestionLayout = Instance.new("UIListLayout")
+suggestionLayout.Padding = UDim.new(0, 4)
+suggestionLayout.SortOrder = Enum.SortOrder.LayoutOrder
+suggestionLayout.Parent = suggestionFrame
+
+-- ================= МЕНЮ НАСТРОЕК (размер 320x200, компактная строка) =================
+local settingsMenu = Instance.new("Frame")
+settingsMenu.Name = "SettingsMenu"
+settingsMenu.Size = UDim2.new(0, 320, 0, 200)
+settingsMenu.Position = UDim2.new(0.5, -160, 1, -280)
+settingsMenu.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+settingsMenu.BackgroundTransparency = 0
+settingsMenu.BorderSizePixel = 0
+settingsMenu.Visible = false
+settingsMenu.Parent = screenGui
+
+local menuCorner = Instance.new("UICorner")
+menuCorner.CornerRadius = UDim.new(0, 12)
+menuCorner.Parent = settingsMenu
+
+local menuStroke = Instance.new("UIStroke")
+menuStroke.Color = Color3.fromRGB(70, 70, 80)
+menuStroke.Thickness = 1
+menuStroke.Transparency = 0
+menuStroke.Parent = settingsMenu
+
+-- Заголовок меню
+local menuHeader = Instance.new("Frame")
+menuHeader.Size = UDim2.new(1, 0, 0, 34)
+menuHeader.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+menuHeader.BackgroundTransparency = 0
+menuHeader.BorderSizePixel = 0
+menuHeader.Parent = settingsMenu
+
+local headerLabel = Instance.new("TextLabel")
+headerLabel.Size = UDim2.new(1, -20, 1, 0)
+headerLabel.Position = UDim2.new(0, 15, 0, 0)
+headerLabel.Text = "Settings"
+headerLabel.TextColor3 = Color3.fromRGB(220, 230, 255)
+headerLabel.TextSize = 18
+headerLabel.Font = Enum.Font.GothamBold
+headerLabel.TextXAlignment = Enum.TextXAlignment.Left
+headerLabel.BackgroundTransparency = 1
+headerLabel.Parent = menuHeader
+
+local closeMenuBtn = Instance.new("TextButton")
+closeMenuBtn.Size = UDim2.new(0, 30, 0, 30)
+closeMenuBtn.Position = UDim2.new(1, -35, 0, 2)
+closeMenuBtn.Text = "✕"
+closeMenuBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
+closeMenuBtn.TextSize = 18
+closeMenuBtn.Font = Enum.Font.SourceSans
+closeMenuBtn.BackgroundTransparency = 1
+closeMenuBtn.Parent = menuHeader
+closeMenuBtn.MouseButton1Click:Connect(function()
+    settingsMenu.Visible = false
+end)
+
+-- Контент меню (горизонтальная строка)
+local menuContent = Instance.new("Frame")
+menuContent.Size = UDim2.new(1, 0, 1, -34)
+menuContent.Position = UDim2.new(0, 0, 0, 34)
+menuContent.BackgroundTransparency = 1
+menuContent.Parent = settingsMenu
+
+-- Горизонтальная строка для отображения клавиши и кнопки
+local keyRow = Instance.new("Frame")
+keyRow.Size = UDim2.new(0.9, 0, 0, 50)
+keyRow.Position = UDim2.new(0.05, 0, 0.3, 0)
+keyRow.BackgroundTransparency = 1
+keyRow.Parent = menuContent
+
+local infoLabel = Instance.new("TextLabel")
+infoLabel.Size = UDim2.new(0.35, 0, 1, 0)
+infoLabel.Position = UDim2.new(0, 0, 0, 0)
+infoLabel.BackgroundTransparency = 1
+infoLabel.Text = "Hotkey:"
+infoLabel.TextColor3 = Color3.fromRGB(200, 210, 230)
+infoLabel.TextSize = 14
+infoLabel.Font = Enum.Font.SourceSans
+infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+infoLabel.Parent = keyRow
+
+local keyDisplayFrame = Instance.new("Frame")
+keyDisplayFrame.Size = UDim2.new(0.25, 0, 0.7, 0)
+keyDisplayFrame.Position = UDim2.new(0.37, 0, 0.15, 0)
+keyDisplayFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+keyDisplayFrame.BackgroundTransparency = 0
+keyDisplayFrame.BorderSizePixel = 0
+keyDisplayFrame.Parent = keyRow
+
+local keyDisplayCorner = Instance.new("UICorner")
+keyDisplayCorner.CornerRadius = UDim.new(0, 6)
+keyDisplayCorner.Parent = keyDisplayFrame
+
+local keyLabel = Instance.new("TextLabel")
+keyLabel.Size = UDim2.new(1, 0, 1, 0)
+keyLabel.BackgroundTransparency = 1
+keyLabel.Text = "Delete"
+keyLabel.TextColor3 = Color3.fromRGB(255, 210, 120)
+keyLabel.TextSize = 16
+keyLabel.Font = Enum.Font.GothamBold
+keyLabel.TextXAlignment = Enum.TextXAlignment.Center
+keyLabel.Parent = keyDisplayFrame
+
+local setKeyBtn = Instance.new("TextButton")
+setKeyBtn.Size = UDim2.new(0.3, 0, 0.7, 0)
+setKeyBtn.Position = UDim2.new(0.67, 0, 0.15, 0)
+setKeyBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+setKeyBtn.BackgroundTransparency = 0
+setKeyBtn.Text = "Set"
+setKeyBtn.TextColor3 = Color3.fromRGB(220, 230, 255)
+setKeyBtn.TextSize = 14
+setKeyBtn.Font = Enum.Font.Gotham
+setKeyBtn.AutoButtonColor = false
+setKeyBtn.Parent = keyRow
+
+local setBtnCorner = Instance.new("UICorner")
+setBtnCorner.CornerRadius = UDim.new(0, 8)
+setBtnCorner.Parent = setKeyBtn
+
+setKeyBtn.MouseEnter:Connect(function()
+    setKeyBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+end)
+setKeyBtn.MouseLeave:Connect(function()
+    setKeyBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+end)
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 25)
+statusLabel.Position = UDim2.new(0, 10, 1, -35)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = ""
+statusLabel.TextColor3 = Color3.fromRGB(150, 200, 150)
+statusLabel.TextSize = 12
+statusLabel.Font = Enum.Font.SourceSans
+statusLabel.TextXAlignment = Enum.TextXAlignment.Center
+statusLabel.Parent = menuContent
+
+local toggleKey = Enum.KeyCode.Delete
+local isWaitingForInput = false
+local waitingConnection
+
+local function updateKeyDisplay()
+    keyLabel.Text = tostring(toggleKey):gsub("Enum.KeyCode.", "")
+end
+updateKeyDisplay()
+
+local function finishKeyCapture()
+    if waitingConnection then
+        waitingConnection:Disconnect()
+        waitingConnection = nil
+    end
+    isWaitingForInput = false
+    setKeyBtn.Text = "Set"
+    statusLabel.Text = ""
+    setKeyBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+end
+
+local function startKeyCapture()
+    if isWaitingForInput then return end
+    isWaitingForInput = true
+    setKeyBtn.Text = "Press..."
+    setKeyBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 100)
+    statusLabel.Text = "Press any key on your keyboard..."
+
+    waitingConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        if input.KeyCode ~= Enum.KeyCode.Unknown then
+            toggleKey = input.KeyCode
+            updateKeyDisplay()
+            finishKeyCapture()
+        end
+    end)
+end
+
+setKeyBtn.MouseButton1Click:Connect(startKeyCapture)
+
+-- ================= КНОПКА НАСТРОЕК (слева от поля ввода) =================
+local leftButtonFrame = Instance.new("Frame")
+leftButtonFrame.Size = UDim2.new(0, 50, 0, 46)
+leftButtonFrame.Position = UDim2.new(0.5, -220, 1, -56)
+leftButtonFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+leftButtonFrame.BackgroundTransparency = 0
+leftButtonFrame.BorderSizePixel = 0
+leftButtonFrame.Parent = screenGui
+
+local leftBtnCorner = Instance.new("UICorner")
+leftBtnCorner.CornerRadius = UDim.new(0, 12)
+leftBtnCorner.Parent = leftButtonFrame
+
+local leftBtnStroke = Instance.new("UIStroke")
+leftBtnStroke.Color = Color3.fromRGB(70, 70, 80)
+leftBtnStroke.Thickness = 1
+leftBtnStroke.Transparency = 0
+leftBtnStroke.Parent = leftButtonFrame
+
+local settingsBtn = Instance.new("TextButton")
+settingsBtn.Size = UDim2.new(1, -10, 1, -10)
+settingsBtn.Position = UDim2.new(0, 5, 0, 5)
+settingsBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+settingsBtn.BackgroundTransparency = 0
+settingsBtn.Text = "⚙️"
+settingsBtn.TextColor3 = Color3.fromRGB(220, 230, 255)
+settingsBtn.TextSize = 20
+settingsBtn.Font = Enum.Font.Gotham
+settingsBtn.AutoButtonColor = false
+settingsBtn.Parent = leftButtonFrame
+
+local settingsBtnCorner = Instance.new("UICorner")
+settingsBtnCorner.CornerRadius = UDim.new(0, 8)
+settingsBtnCorner.Parent = settingsBtn
+
+settingsBtn.MouseButton1Click:Connect(function()
+    settingsMenu.Visible = not settingsMenu.Visible
+    if settingsMenu.Visible then
+        suggestionFrame.Visible = false
+    end
+end)
+
+settingsBtn.MouseEnter:Connect(function()
+    settingsBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+end)
+settingsBtn.MouseLeave:Connect(function()
+    settingsBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+end)
+
+-- Поле ввода (центр)
+local inputFrame = Instance.new("Frame")
+inputFrame.Size = UDim2.new(0, 320, 0, 46)
+inputFrame.Position = UDim2.new(0.5, -160, 1, -56)
+inputFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+inputFrame.BackgroundTransparency = 0
+inputFrame.BorderSizePixel = 0
+inputFrame.Parent = screenGui
+
+local inputCorner = Instance.new("UICorner")
+inputCorner.CornerRadius = UDim.new(0, 12)
+inputCorner.Parent = inputFrame
+
+local inputStroke = Instance.new("UIStroke")
+inputStroke.Color = Color3.fromRGB(70, 70, 80)
+inputStroke.Thickness = 1
+inputStroke.Transparency = 0
+inputStroke.Parent = inputFrame
+
+local cmdInput = Instance.new("TextBox")
+cmdInput.Size = UDim2.new(1, -20, 1, -10)
+cmdInput.Position = UDim2.new(0, 10, 0, 5)
+cmdInput.BackgroundTransparency = 1
+cmdInput.TextColor3 = Color3.fromRGB(240, 240, 250)
+cmdInput.PlaceholderText = "Enter command... (prefix ; or /)"
+cmdInput.PlaceholderColor3 = Color3.fromRGB(160, 170, 190)
+cmdInput.ClearTextOnFocus = false
+cmdInput.Font = Enum.Font.SourceSans
+cmdInput.TextSize = 15
+cmdInput.Parent = inputFrame
+
+-- Кнопка выполнения (справа)
+local buttonFrame = Instance.new("Frame")
+buttonFrame.Size = UDim2.new(0, 50, 0, 46)
+buttonFrame.Position = UDim2.new(0.5, 170, 1, -56)
+buttonFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+buttonFrame.BackgroundTransparency = 0
+buttonFrame.BorderSizePixel = 0
+buttonFrame.Parent = screenGui
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 12)
+btnCorner.Parent = buttonFrame
+
+local btnStroke = Instance.new("UIStroke")
+btnStroke.Color = Color3.fromRGB(70, 70, 80)
+btnStroke.Thickness = 1
+btnStroke.Transparency = 0
+btnStroke.Parent = buttonFrame
+
+local executeBtn = Instance.new("TextButton")
+executeBtn.Size = UDim2.new(1, -10, 1, -10)
+executeBtn.Position = UDim2.new(0, 5, 0, 5)
+executeBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+executeBtn.BackgroundTransparency = 0
+executeBtn.Text = "▶"
+executeBtn.TextColor3 = Color3.fromRGB(220, 230, 255)
+executeBtn.TextSize = 20
+executeBtn.Font = Enum.Font.Gotham
+executeBtn.AutoButtonColor = false
+executeBtn.Parent = buttonFrame
+
+local executeBtnCorner = Instance.new("UICorner")
+executeBtnCorner.CornerRadius = UDim.new(0, 8)
+executeBtnCorner.Parent = executeBtn
+
+-- ========================== КОМАНДЫ ==========================
+local commands = {}
+local function getPlayersByPartial(name)
+    local found = {}
+    local lower = name:lower()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Name:lower():sub(1, #lower) == lower or plr.DisplayName:lower():sub(1, #lower) == lower then
+            table.insert(found, plr)
+        end
+    end
+    return found
+end
+
+local function registerCommand(name, desc, func, aliases)
+    commands[name] = {desc = desc, exec = func}
+    if aliases then
+        for _, a in ipairs(aliases) do commands[a] = {desc = desc, exec = func} end
+    end
+end
+
+-- Команды
+registerCommand("reset", "Reset your character (kill yourself)", function(args, plr)
+    if plr.Character and plr.Character:FindFirstChild("Humanoid") then
+        plr.Character.Humanoid.Health = 0
+        return "Reset executed"
+    end
+    return "No character to reset"
+end)
+
+registerCommand("goto", "Teleport to player (goto <name>)", function(args, plr)
+    if not args[2] then return "Usage: goto <player name>" end
+    local matches = getPlayersByPartial(args[2])
+    if #matches == 0 then return "Player not found" end
+    local target = matches[1]
+    if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+        plr.Character.HumanoidRootPart.CFrame = target.Character.HumanoidRootPart.CFrame
+        return "Teleported to " .. target.Name
+    end
+    return "Character missing"
+end)
+
+registerCommand("speed", "Set walkspeed (speed <num>)", function(args, plr)
+    if args[2] and tonumber(args[2]) then
+        local val = tonumber(args[2])
+        if plr.Character and plr.Character:FindFirstChild("Humanoid") then
+            plr.Character.Humanoid.WalkSpeed = val
+            return "Speed = " .. val
+        end
+    end
+    return "Usage: speed <number>"
+end)
+
+registerCommand("bring", "Bring all players to you", function(args, plr)
+    local count = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= plr and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and plr.Character then
+            p.Character.HumanoidRootPart.CFrame = plr.Character.HumanoidRootPart.CFrame
+            count = count + 1
+        end
+    end
+    return "Brought " .. count .. " players"
+end)
+
+local infJump = false
+registerCommand("infjump", "Enable infinite jump", function(args, plr)
+infJump = true
+    if infJump then
+        local con
+        con = UserInputService.JumpRequest:Connect(function()
+            if infJump and plr.Character and plr.Character:FindFirstChild("Humanoid") then
+                plr.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end)
+        return "Infinite jump ON"
+    end
+end)
+
+registerCommand("uninfjump", "Disable infinite jump", function(args, plr)
+    infJump = false
+	return "Infinite jump OFF"
+end)
+
+
+registerCommand("rejoin", "Rejoin the current server", function(args, plr)
+    game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId)
+    return "Rejoining..."
+end)
+
+registerCommand("help", "Show all commands", function(args, plr)
+    local list = {}
+    for cmd, data in pairs(commands) do
+        table.insert(list, cmd .. " - " .. data.desc)
+    end
+    table.sort(list)
+    return "=== Commands ===\n" .. table.concat(list, "\n")
+end, {"commands"})
+
+-- ========================== ОБРАБОТЧИКИ КОМАНД ==========================
+local commandHistory = {}
+local histIndex = 0
+
+local function executeCommand(raw, plr)
+    local input = raw:gsub("^[;/]", "")
+    local parts = {}
+    for p in input:gmatch("%S+") do table.insert(parts, p) end
+    if #parts == 0 then return end
+    local cmd = parts[1]:lower()
+    if commands[cmd] then
+        local success, result = pcall(commands[cmd].exec, parts, plr)
+        if success and result and type(result) == "string" then
+            print("[Admin] " .. result)
+        elseif not success then
+            warn("[Admin] Error: " .. tostring(result))
+        end
+    else
+        print("[Admin] Unknown: " .. cmd .. ". Type ;help")
+    end
+end
+
+local function sendCommand()
+    local txt = cmdInput.Text
+    if txt ~= "" then
+        table.insert(commandHistory, txt)
+        histIndex = #commandHistory
+        executeCommand(txt, LocalPlayer)
+    end
+    cmdInput.Text = ""
+    suggestionFrame.Visible = false
+end
+
+executeBtn.MouseButton1Click:Connect(sendCommand)
+executeBtn.MouseEnter:Connect(function() executeBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65) end)
+executeBtn.MouseLeave:Connect(function() executeBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40) end)
+
+cmdInput.FocusLost:Connect(function(enter)
+    if enter then sendCommand() end
+end)
+
+cmdInput:GetPropertyChangedSignal("Text"):Connect(function()
+    local search = cmdInput.Text:gsub("^[;/]", "")
+    if search == "" then
+        suggestionFrame.Visible = false
+        return
+    end
+    for _, child in ipairs(suggestionFrame:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+    local suggestions = {}
+    for cmdName, data in pairs(commands) do
+        if cmdName:find(search, 1, true) then
+            table.insert(suggestions, cmdName)
+        end
+    end
+    table.sort(suggestions)
+    if #suggestions > 0 then
+        for i = 1, math.min(#suggestions, 8) do
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1, -12, 0, 32)
+            btn.Position = UDim2.new(0, 6, 0, 0)
+            btn.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+            btn.BackgroundTransparency = 0
+            btn.TextColor3 = Color3.fromRGB(240, 240, 250)
+            btn.Text = suggestions[i] .. "  —  " .. commands[suggestions[i]].desc
+            btn.TextXAlignment = Enum.TextXAlignment.Left
+            btn.Font = Enum.Font.SourceSans
+            btn.TextSize = 13
+            btn.Parent = suggestionFrame
+            local btnCorner = Instance.new("UICorner")
+            btnCorner.CornerRadius = UDim.new(0, 8)
+            btnCorner.Parent = btn
+            btn.MouseButton1Click:Connect(function()
+                cmdInput.Text = ";" .. suggestions[i]
+                suggestionFrame.Visible = false
+                cmdInput:CaptureFocus()
+            end)
+        end
+        suggestionFrame.Visible = true
+        suggestionFrame.CanvasSize = UDim2.new(0, 0, 0, #suggestions * 36)
+    else
+        suggestionFrame.Visible = false
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(input)
+    if cmdInput:IsFocused() then
+        if input.KeyCode == Enum.KeyCode.Up then
+            if histIndex > 0 then
+                histIndex = histIndex - 1
+                cmdInput.Text = commandHistory[histIndex + 1] or ""
+                task.wait()
+                cmdInput.CursorPosition = -1
+            end
+        elseif input.KeyCode == Enum.KeyCode.Down then
+            if histIndex < #commandHistory then
+                histIndex = histIndex + 1
+                cmdInput.Text = commandHistory[histIndex + 1] or ""
+                task.wait()
+                cmdInput.CursorPosition = -1
+            else
+                cmdInput.Text = ""
+            end
+        end
+    end
+end)
+
+-- Глобальное скрытие/показ интерфейса по выбранной клавише
+local uiVisible = true
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == toggleKey then
+        if isWaitingForInput then return end
+        uiVisible = not uiVisible
+        if serverContent then serverContent.Parent.Visible = uiVisible end
+        if friendsContent then friendsContent.Parent.Visible = uiVisible end
+        if richesContent then richesContent.Parent.Visible = uiVisible end
+        if opiumContent then opiumContent.Parent.Visible = uiVisible end
+        if discordContent then discordContent.Parent.Visible = uiVisible end
+        if inputFrame then inputFrame.Visible = uiVisible end
+        if buttonFrame then buttonFrame.Visible = uiVisible end
+        if leftButtonFrame then leftButtonFrame.Visible = uiVisible end
+        if suggestionFrame then suggestionFrame.Visible = false end
+        if settingsMenu then settingsMenu.Visible = false end
+    end
+end)
+
+-- ================= АВТО-ВСТАВКА ПРИ НАЖАТИИ ; И / =================
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.Semicolon or input.KeyCode == Enum.KeyCode.Slash then
+        local prefix = (input.KeyCode == Enum.KeyCode.Semicolon) and ";" or "/"
+        if not cmdInput:IsFocused() then
+			wait(0.03)
+            cmdInput:CaptureFocus()
+            cmdInput.Text = prefix
+            cmdInput.CursorPosition = #prefix + 1
+        else
+            local pos = cmdInput.CursorPosition
+            local text = cmdInput.Text
+            cmdInput.Text = text:sub(1, pos-1) .. prefix .. text:sub(pos)
+            cmdInput.CursorPosition = pos + 1
+        end
+    end
+end)
+
+print("✅ Готово: меню настроек исходного размера (320x200) с компактной строкой для горячей клавиши. Авто-вставка ; и /. Все команды работают.")
