@@ -1,4 +1,4 @@
--- AutoCandyMenu - MM2 candy farmer + murderer fling
+-- AutoCandyMenu - MM2 candy farmer + backpack-full murderer fling
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
 local TweenService = game:GetService("TweenService")
@@ -7,19 +7,29 @@ local UserInputService = game:GetService("UserInputService")
 
 local CONFIG = {
 	onlyCandy = true,
-	speedFast = 22,
-	speedSlow = 16,
+	speedFast = 64,
+	speedSlow = 40,
 	speedFastFling = 55,
 	speedSlowFling = 32,
 	tunnelDepth = 2.5,
-	maxRange = 400,
+	useTunnel = false,
+	teleportMode = false,
+	burstSteps = 6,
+	burstStep = 5,
+	burstTick = 0.05,
+	burstPause = 0.3,
+	maxRange = 250,
 	minDuration = 0.35,
+	moveTick = 0.5,
+	maxStep = 32,
 	touchJitter = 0.25,
-	collectRadius = 16,
+	collectRadius = 4,
 	touchJitterFling = 0.6,
 	scanDelay = 0.05,
 	idleDelay = 0.2,
 	failCooldown = 10,
+	rateMax = 3,
+	rateWindow = 12,
 	flingSpin = 1200,
 	flingPush = 120,
 	flingOut = 700,
@@ -28,10 +38,24 @@ local CONFIG = {
 	pitchDeg = 90,
 }
 
+local PRESETS = {
+	Safe = { burstSteps = 4, burstStep = 3, burstTick = 0.08, burstPause = 0.5, rateMax = 2, rateWindow = 15, collectRadius = 4, useTunnel = false, teleportMode = false },
+	Balanced = { burstSteps = 6, burstStep = 5, burstTick = 0.05, burstPause = 0.3, rateMax = 3, rateWindow = 12, collectRadius = 4, useTunnel = false, teleportMode = false },
+	Fast = { burstSteps = 8, burstStep = 6, burstTick = 0.04, burstPause = 0.15, rateMax = 4, rateWindow = 10, collectRadius = 4, useTunnel = false, teleportMode = false },
+}
+local MODE_ORDER = { "Safe", "Balanced", "Fast" }
+
+local function applyMode(name)
+	local preset = PRESETS[name]
+	if not preset then return end
+	for k, v in pairs(preset) do CONFIG[k] = v end
+end
+
 local lp = Players.LocalPlayer
 local state = {
 	alive = true,
 	enabled = true,
+	mode = "Balanced",
 	fling = false,
 	visited = 0,
 	collected = 0,
@@ -44,6 +68,10 @@ local state = {
 	char = nil,
 	lastPos = nil,
 	deadUntil = 0,
+	moving = false,
+	collecting = false,
+	collectTimes = {},
+	collideSaved = {},
 }
 
 local activeTween
@@ -59,9 +87,26 @@ local function speeds()
 	return CONFIG.speedFast, CONFIG.speedSlow, CONFIG.touchJitter
 end
 
+local function setCollisions(enabled)
+	local ch = lp.Character
+	if not ch then return end
+	for _, p in ipairs(ch:GetDescendants()) do
+		if p:IsA("BasePart") then
+			if enabled then
+				local saved = state.collideSaved[p]
+				if saved ~= nil then p.CanCollide = saved end
+			else
+				if state.collideSaved[p] == nil then state.collideSaved[p] = p.CanCollide end
+				p.CanCollide = false
+			end
+		end
+	end
+end
+
 local function lockHumanoid(hum)
 	if hum.AutoRotate then hum.AutoRotate = false end
 	if not hum.PlatformStand then hum.PlatformStand = true end
+	setCollisions(false)
 end
 
 local function unlockHumanoid()
@@ -70,9 +115,11 @@ local function unlockHumanoid()
 		hum.PlatformStand = false
 		hum.AutoRotate = true
 	end
+	setCollisions(true)
 end
 
 local function cancelTween()
+	state.moving = false
 	if activeTween then
 		pcall(function()
 			activeTween:Cancel()
@@ -89,6 +136,7 @@ local function getRig()
 	if not root or not hum or hum.Health <= 0 or hum:GetState() == Enum.HumanoidStateType.Dead then return nil end
 	if state.char ~= ch then
 		state.char = ch
+		state.collideSaved = {}
 		state.hold = nil
 		state.yaw = nil
 		state.lastPos = nil
@@ -164,54 +212,85 @@ local function lyingCFrame(pos)
 end
 
 local function tween(root, targetCFrame, speed)
-	local dist = (targetCFrame.Position - root.Position).Magnitude
-	local duration = math.max(CONFIG.minDuration, dist / math.max(speed, 1))
-	local tw = TweenService:Create(root, TweenInfo.new(duration, Enum.EasingStyle.Linear), { CFrame = targetCFrame })
-	activeTween = tw
-	tw:Play()
+	state.moving = true
 	local started = os.clock()
-	while tw.PlaybackState == Enum.PlaybackState.Playing and os.clock() - started < duration + 3 do
-		task.wait(0.03)
+	local maxDuration = 30
+	local finished = false
+	local dbg = { steps = 0 }
+	while state.alive and os.clock() - started < maxDuration and not finished do
+		for _ = 1, CONFIG.burstSteps do
+			local delta = targetCFrame.Position - root.Position
+			local dist = delta.Magnitude
+			if dist < 0.3 then
+				finished = true
+				break
+			end
+			local step = math.min(dist, CONFIG.burstStep)
+			pcall(function()
+				root.CFrame = CFrame.new(root.Position + delta.Unit * step) * targetCFrame.Rotation
+				root.AssemblyLinearVelocity = Vector3.zero
+				root.AssemblyAngularVelocity = Vector3.zero
+			end)
+			dbg.steps += 1
+			task.wait(CONFIG.burstTick)
+		end
+		if not finished then
+			if (targetCFrame.Position - root.Position).Magnitude > 80 then
+				task.wait(0.02)
+			else
+				task.wait(CONFIG.burstPause)
+			end
+		end
 	end
-	if activeTween == tw then activeTween = nil end
 	state.hold = targetCFrame
 	state.lastPos = root.Position
+	state.moving = false
+	activeTween = nil
+	dbg.endDist = (targetCFrame.Position - root.Position).Magnitude
+	dbg.seconds = os.clock() - started
+	state.dbg = dbg
 end
 
-local function collect(coin)
+local function collectInner(coin)
 	local root = getRig()
 	if not root then return false end
 	local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
-	if hum then lockHumanoid(hum) end
+	if hum then
+		hum.PlatformStand = true
+		hum.AutoRotate = false
+	end
 	state.current = coin:GetFullName()
-	local fast, slow, jitterScale = speeds()
+	local fast = CONFIG.speedFast
 
 	local flat = Vector3.new(root.Position.X - coin.Position.X, 0, root.Position.Z - coin.Position.Z)
 	if flat.Magnitude < 0.01 then flat = Vector3.new(1, 0, 0) end
 	flat = flat.Unit
 
-	local under = Vector3.new(coin.Position.X, coin.Position.Y - CONFIG.tunnelDepth, coin.Position.Z)
-	tween(root, lyingCFrame(under), fast)
+	local stand = coin.Position + flat * CONFIG.collectRadius + Vector3.new(0, 0.5, 0)
+	tween(root, CFrame.new(stand), fast)
+	setCollisions(true)
 	root = getRig()
 	if not root then return false end
-	local h2 = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
-	if not h2 or h2.Health <= 0 then return false end
 
-	local stand = coin.Position + flat * CONFIG.collectRadius + Vector3.new(0, 0.4, 0)
-	tween(root, lyingCFrame(stand), slow)
-	for _ = 1, 6 do
+	for _ = 1, 20 do
 		if coin.Parent == nil then return true end
-		task.wait(0.08)
-	end
-
-	if coin.Parent then
 		root = getRig()
 		if not root then return false end
-		local target = coin.Position + Vector3.new((math.random() - 0.5) * jitterScale, 0.4, (math.random() - 0.5) * jitterScale)
-		tween(root, lyingCFrame(target), slow)
-		task.wait(0.08)
+		local off = Vector3.new((math.random() - 0.5) * 0.8, 0.5, (math.random() - 0.5) * 0.8)
+		pcall(function()
+			root.CFrame = CFrame.new(coin.Position + off)
+		end)
+		task.wait(0.06)
 	end
 	return coin.Parent == nil
+end
+
+local function collect(coin)
+	state.collecting = true
+	state.hold = nil
+	local ok, result = pcall(collectInner, coin)
+	state.collecting = false
+	return ok and result == true
 end
 
 local function flingMurderer(murderer)
@@ -298,7 +377,7 @@ local function buildGui()
 
 	local frame = Instance.new("Frame")
 	frame.Name = "Main"
-	frame.Size = UDim2.fromOffset(240, 150)
+	frame.Size = UDim2.fromOffset(240, 220)
 	frame.Position = UDim2.fromOffset(24, 24)
 	frame.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
 	frame.BackgroundTransparency = 0.08
@@ -330,7 +409,7 @@ local function buildGui()
 	local status = Instance.new("TextLabel")
 	status.Name = "Status"
 	status.Size = UDim2.new(1, -20, 0, 26)
-	status.Position = UDim2.fromOffset(10, 118)
+	status.Position = UDim2.fromOffset(10, 190)
 	status.BackgroundTransparency = 1
 	status.Font = Enum.Font.Gotham
 	status.TextSize = 12
@@ -353,6 +432,32 @@ local function buildGui()
 		flingBtn.Text = "Fling: " .. (state.fling and "ON" or "OFF")
 		flingBtn.BackgroundColor3 = state.fling and Color3.fromRGB(110, 55, 40) or Color3.fromRGB(35, 35, 42)
 	end)
+
+	local modeBtn
+	modeBtn = makeButton(frame, "Mode: " .. state.mode, 108, function()
+		local idx = 1
+		for i, name in ipairs(MODE_ORDER) do
+			if name == state.mode then idx = i break end
+		end
+		idx = idx % #MODE_ORDER + 1
+		state.mode = MODE_ORDER[idx]
+		applyMode(state.mode)
+		modeBtn.Text = "Mode: " .. state.mode
+		modeBtn.BackgroundColor3 = Color3.fromRGB(45, 60, 95)
+	end)
+	modeBtn.BackgroundColor3 = Color3.fromRGB(45, 60, 95)
+
+	local hint = Instance.new("TextLabel")
+	hint.Size = UDim2.new(1, -20, 0, 34)
+	hint.Position = UDim2.fromOffset(10, 146)
+	hint.BackgroundTransparency = 1
+	hint.Font = Enum.Font.Gotham
+	hint.TextSize = 11
+	hint.TextWrapped = true
+	hint.TextXAlignment = Enum.TextXAlignment.Left
+	hint.TextColor3 = Color3.fromRGB(120, 120, 135)
+	hint.Text = "Safe - slow and quiet\nBalanced - default farm\nFast - kick risk"
+	hint.Parent = frame
 
 	local dragging = false
 	local dragStart, frameStart
@@ -383,7 +488,7 @@ local gui, statusLabel = buildGui()
 local function updateStatus()
 	if statusLabel and statusLabel.Parent then
 		local since = state.lastCollect > 0 and string.format("%.1fs", os.clock() - state.lastCollect) or "-"
-		statusLabel.Text = string.format("collected %d | left %d | flings %d | last %s", state.collected, countCoins(), state.flings, since)
+		statusLabel.Text = string.format("%s | coll %d | left %d | fl %d | %s", state.mode, state.collected, countCoins(), state.flings, since)
 	end
 end
 
@@ -398,7 +503,7 @@ local heartbeatConn = RunService.Heartbeat:Connect(function()
 	if not state.alive or not state.enabled then return end
 	if state.deadUntil > os.clock() then return end
 	local root = getRig()
-	if not root or activeTween then return end
+	if not root or activeTween or state.moving or state.collecting then return end
 	local coin = nearestCoin(root)
 	if not coin then
 		state.hold = nil
@@ -444,14 +549,24 @@ task.spawn(function()
 			else
 				local coin = nearestCoin(root)
 				if coin then
-					state.visited += 1
-					if collect(coin) then
-						state.collected += 1
-						state.lastCollect = os.clock()
-					else
-						blacklist[coin] = os.clock() + CONFIG.failCooldown
+					local now = os.clock()
+					while state.collectTimes[1] and now - state.collectTimes[1] > CONFIG.rateWindow do
+						table.remove(state.collectTimes, 1)
 					end
-					task.wait(CONFIG.scanDelay)
+					if #state.collectTimes >= CONFIG.rateMax then
+						state.current = "rate limit"
+						task.wait(0.5)
+					else
+						state.visited += 1
+						if collect(coin) then
+							state.collected += 1
+							state.lastCollect = os.clock()
+							table.insert(state.collectTimes, os.clock())
+						else
+							blacklist[coin] = os.clock() + CONFIG.failCooldown
+						end
+						task.wait(CONFIG.scanDelay)
+					end
 				elseif state.fling then
 					local murderer = findMurderer()
 					if murderer then
@@ -480,6 +595,7 @@ getgenv().AutoCandyStatus = function()
 		running = state.alive,
 		enabled = state.enabled,
 		fling = state.fling,
+		mode = state.mode,
 		visited = state.visited,
 		collected = state.collected,
 		flings = state.flings,
@@ -487,6 +603,7 @@ getgenv().AutoCandyStatus = function()
 		coinsLeft = countCoins(),
 		current = state.current,
 		sinceLast = state.lastCollect > 0 and (os.clock() - state.lastCollect) or -1,
+		dbg = state.dbg,
 	}
 end
 getgenv().AutoCandyStop = function()
