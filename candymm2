@@ -1,0 +1,501 @@
+-- AutoCandyMenu - MM2 candy farmer + murderer fling
+local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local CONFIG = {
+	onlyCandy = true,
+	speedFast = 22,
+	speedSlow = 16,
+	speedFastFling = 55,
+	speedSlowFling = 32,
+	tunnelDepth = 2.5,
+	maxRange = 400,
+	minDuration = 0.35,
+	touchJitter = 0.25,
+	collectRadius = 16,
+	touchJitterFling = 0.6,
+	scanDelay = 0.05,
+	idleDelay = 0.2,
+	failCooldown = 10,
+	flingSpin = 1200,
+	flingPush = 120,
+	flingOut = 700,
+	flingUp = 900,
+	flingWindow = 2.5,
+	pitchDeg = 90,
+}
+
+local lp = Players.LocalPlayer
+local state = {
+	alive = true,
+	enabled = true,
+	fling = false,
+	visited = 0,
+	collected = 0,
+	flings = 0,
+	startedAt = os.clock(),
+	current = "-",
+	lastCollect = 0,
+	hold = nil,
+	yaw = nil,
+	char = nil,
+	lastPos = nil,
+	deadUntil = 0,
+}
+
+local activeTween
+local blacklist = {}
+
+local previous = getgenv().AutoCandyMenu
+if previous then
+	previous.state.alive = false
+	previous.state.enabled = false
+end
+
+local function speeds()
+	return CONFIG.speedFast, CONFIG.speedSlow, CONFIG.touchJitter
+end
+
+local function lockHumanoid(hum)
+	if hum.AutoRotate then hum.AutoRotate = false end
+	if not hum.PlatformStand then hum.PlatformStand = true end
+end
+
+local function unlockHumanoid()
+	local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.PlatformStand = false
+		hum.AutoRotate = true
+	end
+end
+
+local function cancelTween()
+	if activeTween then
+		pcall(function()
+			activeTween:Cancel()
+		end)
+	end
+	activeTween = nil
+end
+
+local function getRig()
+	local ch = lp.Character
+	if not ch then return nil end
+	local root = ch:FindFirstChild("HumanoidRootPart")
+	local hum = ch:FindFirstChildOfClass("Humanoid")
+	if not root or not hum or hum.Health <= 0 or hum:GetState() == Enum.HumanoidStateType.Dead then return nil end
+	if state.char ~= ch then
+		state.char = ch
+		state.hold = nil
+		state.yaw = nil
+		state.lastPos = nil
+		hum.Died:Connect(function()
+			state.hold = nil
+			state.lastPos = nil
+			state.deadUntil = os.clock() + 6
+			cancelTween()
+			unlockHumanoid()
+		end)
+	end
+	if not state.yaw and root then
+		local look = root.CFrame.LookVector
+		state.yaw = math.atan2(-look.X, -look.Z)
+	end
+	return root
+end
+
+local function countCoins()
+	local n = 0
+	for _, c in ipairs(CollectionService:GetTagged("ServerCoinPart")) do
+		if c:IsA("BasePart") and c.Parent and (not CONFIG.onlyCandy or c:GetAttribute("CoinID") == "Candy") then
+			n += 1
+		end
+	end
+	return n
+end
+
+local function nearestCoin(root)
+	local now = os.clock()
+	local best, bestD
+	for _, c in ipairs(CollectionService:GetTagged("ServerCoinPart")) do
+		if c:IsA("BasePart") and c.Parent then
+			local id = c:GetAttribute("CoinID")
+			local ban = blacklist[c]
+			if (not CONFIG.onlyCandy or id == "Candy") and (not ban or ban < now) then
+				local d = (c.Position - root.Position).Magnitude
+				if d <= CONFIG.maxRange and (not bestD or d < bestD) then
+					best, bestD = c, d
+				end
+			end
+		end
+	end
+	return best, bestD
+end
+
+local function hasKnife(plr)
+	local ch = plr.Character
+	if not ch then return false end
+	for _, t in ipairs(ch:GetChildren()) do
+		if t:IsA("Tool") and t.Name:lower():find("knife") then return true end
+	end
+	local bp = plr:FindFirstChildOfClass("Backpack")
+	if bp then
+		for _, t in ipairs(bp:GetChildren()) do
+			if t:IsA("Tool") and t.Name:lower():find("knife") then return true end
+		end
+	end
+	return false
+end
+
+local function findMurderer()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= lp and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") and hasKnife(plr) then
+			return plr
+		end
+	end
+	return nil
+end
+
+local function lyingCFrame(pos)
+	return CFrame.new(pos) * CFrame.Angles(0, state.yaw or 0, 0) * CFrame.Angles(math.rad(CONFIG.pitchDeg), 0, 0)
+end
+
+local function tween(root, targetCFrame, speed)
+	local dist = (targetCFrame.Position - root.Position).Magnitude
+	local duration = math.max(CONFIG.minDuration, dist / math.max(speed, 1))
+	local tw = TweenService:Create(root, TweenInfo.new(duration, Enum.EasingStyle.Linear), { CFrame = targetCFrame })
+	activeTween = tw
+	tw:Play()
+	local started = os.clock()
+	while tw.PlaybackState == Enum.PlaybackState.Playing and os.clock() - started < duration + 3 do
+		task.wait(0.03)
+	end
+	if activeTween == tw then activeTween = nil end
+	state.hold = targetCFrame
+	state.lastPos = root.Position
+end
+
+local function collect(coin)
+	local root = getRig()
+	if not root then return false end
+	local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+	if hum then lockHumanoid(hum) end
+	state.current = coin:GetFullName()
+	local fast, slow, jitterScale = speeds()
+
+	local flat = Vector3.new(root.Position.X - coin.Position.X, 0, root.Position.Z - coin.Position.Z)
+	if flat.Magnitude < 0.01 then flat = Vector3.new(1, 0, 0) end
+	flat = flat.Unit
+
+	local under = Vector3.new(coin.Position.X, coin.Position.Y - CONFIG.tunnelDepth, coin.Position.Z)
+	tween(root, lyingCFrame(under), fast)
+	root = getRig()
+	if not root then return false end
+	local h2 = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+	if not h2 or h2.Health <= 0 then return false end
+
+	local stand = coin.Position + flat * CONFIG.collectRadius + Vector3.new(0, 0.4, 0)
+	tween(root, lyingCFrame(stand), slow)
+	for _ = 1, 6 do
+		if coin.Parent == nil then return true end
+		task.wait(0.08)
+	end
+
+	if coin.Parent then
+		root = getRig()
+		if not root then return false end
+		local target = coin.Position + Vector3.new((math.random() - 0.5) * jitterScale, 0.4, (math.random() - 0.5) * jitterScale)
+		tween(root, lyingCFrame(target), slow)
+		task.wait(0.08)
+	end
+	return coin.Parent == nil
+end
+
+local function flingMurderer(murderer)
+	local root = getRig()
+	local mch = murderer.Character
+	local target = mch and mch:FindFirstChild("HumanoidRootPart")
+	if not root or not target then return false end
+	state.current = "fling " .. murderer.Name
+	state.hold = nil
+
+	tween(root, CFrame.new(target.Position + Vector3.new(0, 1.2, 0)), CONFIG.speedFastFling)
+	pcall(function() target:SetNetworkOwner(lp) end)
+	task.wait(0.1)
+
+	local horiz = target.Position - root.Position
+	if horiz.Magnitude < 0.01 then horiz = Vector3.new(1, 0, 0) end
+	horiz = Vector3.new(horiz.X, 0, horiz.Z).Unit
+
+	pcall(function()
+		root.AssemblyAngularVelocity = Vector3.new(0, CONFIG.flingSpin, 0)
+	end)
+
+	local deadline = os.clock() + CONFIG.flingWindow
+	while state.alive and state.enabled and state.fling and os.clock() < deadline do
+		local mroot = murderer.Character and murderer.Character:FindFirstChild("HumanoidRootPart")
+		if not mroot then break end
+		horiz = mroot.Position - root.Position
+		if horiz.Magnitude > 0.01 then
+			horiz = Vector3.new(horiz.X, 0, horiz.Z).Unit
+		end
+		pcall(function() mroot:SetNetworkOwner(lp) end)
+		pcall(function()
+			mroot.AssemblyLinearVelocity = horiz * CONFIG.flingOut + Vector3.new(0, CONFIG.flingUp, 0)
+		end)
+		pcall(function()
+			mroot.CFrame = mroot.CFrame + Vector3.new(0, 8, 0)
+		end)
+		task.wait(0.03)
+	end
+
+	root = getRig()
+	if root then
+		pcall(function()
+			root.AssemblyAngularVelocity = Vector3.zero
+			root.AssemblyLinearVelocity = Vector3.zero
+		end)
+	end
+	state.hold = nil
+	unlockHumanoid()
+	state.flings += 1
+	return true
+end
+
+local function makeButton(parent, text, y, onClick)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, -20, 0, 30)
+	btn.Position = UDim2.new(0, 10, 0, y)
+	btn.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+	btn.BorderSizePixel = 0
+	btn.AutoButtonColor = true
+	btn.Font = Enum.Font.GothamMedium
+	btn.TextSize = 14
+	btn.TextColor3 = Color3.fromRGB(235, 235, 240)
+	btn.Text = text
+	btn.Parent = parent
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = btn
+	btn.MouseButton1Click:Connect(onClick)
+	return btn
+end
+
+local function buildGui()
+	local old = lp:FindFirstChild("PlayerGui") and lp.PlayerGui:FindFirstChild("AutoCandyMenu")
+	if old then old:Destroy() end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "AutoCandyMenu"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.DisplayOrder = 100
+	gui.Parent = lp:WaitForChild("PlayerGui")
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Main"
+	frame.Size = UDim2.fromOffset(240, 150)
+	frame.Position = UDim2.fromOffset(24, 24)
+	frame.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+	frame.BackgroundTransparency = 0.08
+	frame.BorderSizePixel = 0
+	frame.Active = true
+	frame.Parent = gui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = frame
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(70, 70, 80)
+	stroke.Thickness = 1
+	stroke.Transparency = 0.4
+	stroke.Parent = frame
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -20, 0, 26)
+	title.Position = UDim2.fromOffset(10, 8)
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 15
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	title.Text = "AutoCandy"
+	title.Parent = frame
+
+	local status = Instance.new("TextLabel")
+	status.Name = "Status"
+	status.Size = UDim2.new(1, -20, 0, 26)
+	status.Position = UDim2.fromOffset(10, 118)
+	status.BackgroundTransparency = 1
+	status.Font = Enum.Font.Gotham
+	status.TextSize = 12
+	status.TextXAlignment = Enum.TextXAlignment.Left
+	status.TextColor3 = Color3.fromRGB(150, 150, 160)
+	status.Text = "collected 0 | left 0"
+	status.Parent = frame
+
+	local farmBtn
+	farmBtn = makeButton(frame, "Farm: ON", 38, function()
+		state.enabled = not state.enabled
+		farmBtn.Text = "Farm: " .. (state.enabled and "ON" or "OFF")
+		farmBtn.BackgroundColor3 = state.enabled and Color3.fromRGB(40, 90, 55) or Color3.fromRGB(60, 40, 45)
+	end)
+	farmBtn.BackgroundColor3 = Color3.fromRGB(40, 90, 55)
+
+	local flingBtn
+	flingBtn = makeButton(frame, "Fling: OFF", 73, function()
+		state.fling = not state.fling
+		flingBtn.Text = "Fling: " .. (state.fling and "ON" or "OFF")
+		flingBtn.BackgroundColor3 = state.fling and Color3.fromRGB(110, 55, 40) or Color3.fromRGB(35, 35, 42)
+	end)
+
+	local dragging = false
+	local dragStart, frameStart
+	frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = Vector2.new(input.Position.X, input.Position.Y)
+			frameStart = frame.Position
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if not dragging then return end
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		local delta = Vector2.new(input.Position.X, input.Position.Y) - dragStart
+		frame.Position = UDim2.new(frameStart.X.Scale, frameStart.X.Offset + delta.X, frameStart.Y.Scale, frameStart.Y.Offset + delta.Y)
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	return gui, status
+end
+
+local gui, statusLabel = buildGui()
+
+local function updateStatus()
+	if statusLabel and statusLabel.Parent then
+		local since = state.lastCollect > 0 and string.format("%.1fs", os.clock() - state.lastCollect) or "-"
+		statusLabel.Text = string.format("collected %d | left %d | flings %d | last %s", state.collected, countCoins(), state.flings, since)
+	end
+end
+
+task.spawn(function()
+	while state.alive do
+		updateStatus()
+		task.wait(0.5)
+	end
+end)
+
+local heartbeatConn = RunService.Heartbeat:Connect(function()
+	if not state.alive or not state.enabled then return end
+	if state.deadUntil > os.clock() then return end
+	local root = getRig()
+	if not root or activeTween then return end
+	local coin = nearestCoin(root)
+	if not coin then
+		state.hold = nil
+		state.lastPos = root.Position
+		unlockHumanoid()
+		pcall(function()
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+		end)
+		return
+	end
+	if state.lastPos and (root.Position - state.lastPos).Magnitude > 120 then
+		state.hold = nil
+		state.yaw = nil
+		state.lastPos = root.Position
+		return
+	end
+	state.lastPos = root.Position
+	if not state.hold then return end
+	local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+	if hum then lockHumanoid(hum) end
+	pcall(function()
+		root.CFrame = state.hold
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end)
+end)
+
+task.spawn(function()
+	while state.alive do
+		if not state.enabled then
+			cancelTween()
+			unlockHumanoid()
+			task.wait(0.2)
+		elseif state.deadUntil > os.clock() then
+			cancelTween()
+			unlockHumanoid()
+			task.wait(0.5)
+		else
+			local root = getRig()
+			if not root then
+				task.wait(0.3)
+			else
+				local coin = nearestCoin(root)
+				if coin then
+					state.visited += 1
+					if collect(coin) then
+						state.collected += 1
+						state.lastCollect = os.clock()
+					else
+						blacklist[coin] = os.clock() + CONFIG.failCooldown
+					end
+					task.wait(CONFIG.scanDelay)
+				elseif state.fling then
+					local murderer = findMurderer()
+					if murderer then
+						flingMurderer(murderer)
+					else
+						state.current = "no murderer"
+						task.wait(0.4)
+					end
+				else
+					state.hold = nil
+					unlockHumanoid()
+					state.current = countCoins() > 0 and "out of range" or "waiting"
+					task.wait(CONFIG.idleDelay)
+				end
+			end
+		end
+	end
+	if heartbeatConn then heartbeatConn:Disconnect() end
+	cancelTween()
+	unlockHumanoid()
+end)
+
+getgenv().AutoCandyMenu = { state = state, gui = gui }
+getgenv().AutoCandyStatus = function()
+	return {
+		running = state.alive,
+		enabled = state.enabled,
+		fling = state.fling,
+		visited = state.visited,
+		collected = state.collected,
+		flings = state.flings,
+		alive = os.clock() - state.startedAt,
+		coinsLeft = countCoins(),
+		current = state.current,
+		sinceLast = state.lastCollect > 0 and (os.clock() - state.lastCollect) or -1,
+	}
+end
+getgenv().AutoCandyStop = function()
+	state.enabled = false
+	state.alive = false
+	state.hold = nil
+	cancelTween()
+	unlockHumanoid()
+	if gui then pcall(function() gui:Destroy() end) end
+end
+
+return "AutoCandyMenu armed"
